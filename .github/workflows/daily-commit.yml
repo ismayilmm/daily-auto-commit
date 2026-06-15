@@ -1,0 +1,71 @@
+name: Daily Additive Commits
+
+# Makes 5 additive commits per day via 5 cron triggers. Each run appends one
+# timestamped line to activity.log and pushes it back to the default branch.
+#
+# Fork-friendly: the commit identity is derived automatically from the repo
+# owner, so commits count toward *your* contribution graph with zero config.
+# Override it by setting repository variables GIT_USER_NAME / GIT_USER_EMAIL
+# (Settings -> Secrets and variables -> Actions -> Variables).
+#
+# Notes on GitHub's scheduler:
+#  - Cron times are UTC.
+#  - Scheduled runs are best-effort and can be delayed/dropped during peak load,
+#    which is why these fire off-the-hour rather than at :00.
+#  - GitHub auto-disables scheduled workflows after 60 days with NO repo
+#    activity. These commits are activity, so the schedule keeps itself alive.
+
+on:
+  schedule:
+    - cron: '17 2 * * *'   # ~02:17 UTC
+    - cron: '23 7 * * *'   # ~07:23 UTC
+    - cron: '31 12 * * *'  # ~12:31 UTC
+    - cron: '19 17 * * *'  # ~17:19 UTC
+    - cron: '43 22 * * *'  # ~22:43 UTC
+  workflow_dispatch:        # manual run from the Actions tab / `gh workflow run`
+
+permissions:
+  contents: write           # required so GITHUB_TOKEN can push the commit
+
+jobs:
+  additive-commit:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: additive-commit   # never let two runs push at the same time
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure git identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          VAR_NAME: ${{ vars.GIT_USER_NAME }}
+          VAR_EMAIL: ${{ vars.GIT_USER_EMAIL }}
+        run: |
+          set -euo pipefail
+          NAME="${VAR_NAME:-$OWNER}"
+          if [ -n "${VAR_EMAIL:-}" ]; then
+            EMAIL="$VAR_EMAIL"
+          else
+            # Build the privacy-preserving no-reply email GitHub attributes to
+            # the owner, so contributions are counted automatically.
+            USER_ID="$(gh api "users/$OWNER" --jq .id)"
+            EMAIL="${USER_ID}+${OWNER}@users.noreply.github.com"
+          fi
+          git config user.name "$NAME"
+          git config user.email "$EMAIL"
+          echo "Committing as $NAME <$EMAIL>"
+
+      - name: Make additive commit
+        run: |
+          set -euo pipefail
+          STAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          COUNT=$(($(wc -l < activity.log) + 1))
+          echo "$COUNT  $STAMP  tick" >> activity.log
+          git add activity.log
+          git commit -m "chore: additive commit #$COUNT ($STAMP)"
+          # Rebase on remote in case of drift, then push to whatever branch ran.
+          git pull --rebase origin "$GITHUB_REF_NAME" || true
+          git push origin "HEAD:$GITHUB_REF_NAME"
